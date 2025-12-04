@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # -----------------------------
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN") # replace with your token
-ZOHO_FLOW_URL =  os.getenv("ZOHO_FLOW_URL") # replace with your Zoho Flow URL
+ZOHO_FLOW_URL =  os.getenv("ZOHO_WEBHOOK_URL") # replace with your Zoho Flow URL
 
 # -----------------------------
 # LOGGING SETUP
