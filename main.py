@@ -3,9 +3,11 @@ from fastapi.responses import JSONResponse
 import httpx
 import logging
 import os
+from dotenv import load_dotenv
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
+load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN") # replace with your token
 ZOHO_FLOW_URL =  os.getenv("ZOHO_FLOW_URL") # replace with your Zoho Flow URL
 
