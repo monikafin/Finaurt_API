@@ -1,89 +1,84 @@
-#Correct code for webhook
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import httpx
-import logging
+import jwt
 import os
-from dotenv import load_dotenv
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
-load_dotenv()
-API_TOKEN = os.getenv("API_TOKEN") # replace with your token
-ZOHO_FLOW_URL =  os.getenv("ZOHO_WEBHOOK_URL") # replace with your Zoho Flow URL
-print("API_TOKEN from env:", os.getenv("API_TOKEN"))
-# -----------------------------
-# LOGGING SETUP
-# -----------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("api_requests.log"), logging.StreamHandler()]
-)
+from dotenv import load_dotenv, find_dotenv
+from datetime import datetime, timedelta
 
-# -----------------------------
-# FASTAPI APP
-# -----------------------------
-app = FastAPI(title="Secure Webhook API", description="API to safely forward requests to Zoho Flow")
+# Load environment variables
+load_dotenv(find_dotenv())
 
-# -----------------------------
-# GET endpoint for testing
-# -----------------------------
-@app.get("/FinaurtAPI")
-async def test_get():
-    return {"message": "API is live. Use POST to send data securely."}
+API_SECRET = os.getenv("API_TOKEN")
+WEBHOOK_URL = os.getenv("ZOHO_WEBHOOK_URL")  # Where we forward the form-data
 
-# -----------------------------
-# POST endpoint for webhook integration
-# -----------------------------
-@app.post("/FinaurtAPI")
-async def trigger_webhook(request: Request):
-    # -----------------------------
-    # 1. Check API token
-    # -----------------------------
-    token = request.headers.get("x-api-key")
-    if token != API_TOKEN:
-        logging.warning("Unauthorized token attempt")
-        raise HTTPException(status_code=401, detail="Unauthorized: Invalid API token")
+if not API_SECRET:
+    raise Exception("API_SECRET missing from .env")
 
-    # -----------------------------
-    # 2. Parse incoming request safely
-    # -----------------------------
+app = FastAPI()
+
+
+# -------------------------
+# Generate JWT token (for testing)
+# -------------------------
+def generate_test_token():
+    payload = {
+        "user": "test_sender",
+        "exp": datetime.utcnow() + timedelta(hours=1)
+    }
+    token = jwt.encode(payload, API_SECRET, algorithm="HS256")
+    return token
+
+
+@app.get("/get-token")
+def get_test_token():
+    """Generate a test JWT token."""
+    return {"token": generate_test_token()}
+
+
+# -------------------------
+# Verify the JWT token
+# -------------------------
+def verify_token(token: str):
     try:
-        # Try JSON first
-        data = await request.json()
-    except Exception:
-        try:
-            # Fallback to form-data
-            form = await request.form()
-            data = dict(form)
-        except Exception as e:
-            logging.error("Failed to parse request data: %s", e)
-            raise HTTPException(status_code=400, detail="Invalid request data")
+        payload = jwt.decode(token, API_SECRET, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
 
-    logging.info("POST Webhook hit! Data: %s", data)
 
-    # -----------------------------
-    # 3. Forward data to Zoho Flow
-    # -----------------------------
+# -------------------------
+# Main Webhook Receiver (form-data)
+# -------------------------
+@app.post("/receive-webhook")
+async def receive_webhook(request: Request):
+    # Extract Authorization header
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(401, "Authorization header missing")
+
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(401, "Invalid Authorization format")
+
+    token = auth_header.split(" ")[1]
+    verify_token(token)
+
+    # Read form-data
     try:
-        async with httpx.AsyncClient() as client:
-            # Use form data if received as form, otherwise JSON
-            response = await client.post(ZOHO_FLOW_URL, data=data)
-        logging.info("Forwarded to Zoho Flow. Status: %s, Response: %s", response.status_code, response.text)
+        form = await request.form()
+        data = dict(form)
     except Exception as e:
-        logging.error("Failed to forward to Zoho Flow: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to forward to Zoho Flow")
+        raise HTTPException(400, f"Invalid form-data: {str(e)}")
 
-    # -----------------------------
-    # 4. Return response to client
-    # -----------------------------
-    return JSONResponse(
-        status_code=200,
-        content={
-            "message": "POST request received and forwarded successfully",
-            "received_data": data,
-            "zoho_status": response.status_code,
-            "zoho_response": response.text
-        }
-    )
+    # Forward to external webhook URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(WEBHOOK_URL, json=data)
+
+    return {
+        "message": "Webhook form-data processed successfully",
+        "forward_status": response.status_code,
+        "forward_response": response.text,
+        "received_form_data": data
+    }
