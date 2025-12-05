@@ -3,16 +3,20 @@ from fastapi.responses import JSONResponse
 import httpx
 import logging
 import os
+from datetime import datetime, timedelta
+import jwt
 from dotenv import load_dotenv
+
 # -----------------------------
-# CONFIGURATION
+# LOAD ENVIRONMENT VARIABLES
 # -----------------------------
 load_dotenv()
-API_TOKEN = os.getenv("API_TOKEN") # replace with your token
-ZOHO_FLOW_URL =  os.getenv("ZOHO_WEBHOOK_URL") # replace with your Zoho Flow URL
-print("API_TOKEN from env:", os.getenv("API_TOKEN"))
+ZOHO_FLOW_URL = os.getenv("ZOHO_WEBHOOK_URL")
+SECRET_KEY = os.getenv("SECRET_KEY")  # internal only
+ALGORITHM = "HS256"
+
 # -----------------------------
-# LOGGING SETUP
+# LOGGING
 # -----------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -23,14 +27,25 @@ logging.basicConfig(
 # -----------------------------
 # FASTAPI APP
 # -----------------------------
-app = FastAPI(title="Secure Webhook API", description="API to safely forward requests to Zoho Flow")
+app = FastAPI(title="Webhook API – No Token Required")
+
+# -----------------------------
+# INTERNAL JWT CREATION (for forwarding)
+# -----------------------------
+def create_internal_jwt(data: dict, expires_minutes: int = 60):
+    """Generate JWT internally for forwarding or logging purposes"""
+    expire = datetime.utcnow() + timedelta(minutes=expires_minutes)
+    payload = data.copy()
+    payload.update({"exp": expire})
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token
 
 # -----------------------------
 # GET endpoint for testing
 # -----------------------------
-@app.get("/FinaurtAPI")
-async def test_get():
-    return {"message": "API is live. Use POST to send data securely."}
+@app.get("/")
+async def root():
+    return {"message": "Server is live. POST to /FinaurtAPI to send data."}
 
 # -----------------------------
 # POST endpoint for webhook integration
@@ -38,37 +53,32 @@ async def test_get():
 @app.post("/FinaurtAPI")
 async def trigger_webhook(request: Request):
     # -----------------------------
-    # 1. Check API token
-    # -----------------------------
-    token = request.headers.get("x-api-key")
-    if token != API_TOKEN:
-        logging.warning("Unauthorized token attempt")
-        raise HTTPException(status_code=401, detail="Unauthorized: Invalid API token")
-
-    # -----------------------------
-    # 2. Parse incoming request safely
+    # 1. Parse incoming request safely
     # -----------------------------
     try:
-        # Try JSON first
         data = await request.json()
-    except Exception:
+    except:
         try:
-            # Fallback to form-data
             form = await request.form()
             data = dict(form)
         except Exception as e:
-            logging.error("Failed to parse request data: %s", e)
+            logging.error("Failed to parse request: %s", e)
             raise HTTPException(status_code=400, detail="Invalid request data")
 
-    logging.info("POST Webhook hit! Data: %s", data)
+    logging.info("Webhook hit → Data: %s", data)
+
+    # -----------------------------
+    # 2. Generate internal JWT (optional, for forwarding or logs)
+    # -----------------------------
+    internal_token = create_internal_jwt({"internal": "forwarding"})
 
     # -----------------------------
     # 3. Forward data to Zoho Flow
     # -----------------------------
     try:
+        headers = {"Authorization": f"Bearer {internal_token}"}
         async with httpx.AsyncClient() as client:
-            # Use form data if received as form, otherwise JSON
-            response = await client.post(ZOHO_FLOW_URL, data=data)
+            response = await client.post(ZOHO_FLOW_URL, headers=headers, data=data)
         logging.info("Forwarded to Zoho Flow. Status: %s, Response: %s", response.status_code, response.text)
     except Exception as e:
         logging.error("Failed to forward to Zoho Flow: %s", e)
